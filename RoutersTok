@@ -1,0 +1,186 @@
+{
+  /import JParseFunctions;
+  :global botToken "YOUR_BOT_TOKEN"
+  :global myChat "YOUR_CHAT_ID"
+  :global urlStart "https://api.telegram.org/bot"
+  :global lastUpdateId "";
+  :local nextFetchCounter 0
+  :global replaceChar
+  :if (!any $replaceChar) do={
+    :global replaceChar do={
+      :for i from=0 to=([:len $1] - 1) do={
+        :local char [:pick $1 $i]
+        :if ($char = $2) do={
+          :set $char $3
+        }
+        :set $output ($output . $char)
+      }
+      :return $output
+    };
+  }
+  :global sendMessage
+  :if (!any $sendMessage) do={
+    :global sendMessage do={
+      :global myChat;
+      :global asyncFetch;
+      :local data "{\"chat_id\":\"$myChat\",\"text\":\"$1\"}";
+      [$asyncFetch uri=("/sendMessage") data=($data)]
+    };
+  }
+  :global asyncFetch
+  :if (!any $asyncFetch) do={
+    :global asyncFetch do={
+      :global botToken;
+      :global urlStart;
+      :global asyncFetchUri $uri
+      :global asyncFetchData $data
+    #:put $uri
+    execute {
+      :global botToken;
+      :global urlStart;
+      :global asyncFetchUri;
+      :global asyncFetchData;
+
+      :local url ($urlStart.$botToken.$asyncFetchUri)
+      /tool fetch url=$url keep-result=no http-header-field="content-type: application/json; charset=utf-8" http-method=post http-data=$asyncFetchData
+    }
+  };
+}
+:global getLastUpdateId
+:if (!any $getLastUpdateId) do={
+  :global getLastUpdateId do={
+    :global lastUpdateId;
+    if ($lastUpdateId != "") do={
+      :return $lastUpdateId
+    }
+    #:put "get from files"
+    #:do {:set lastUpdateId [/file get [find name="tmp/tlastupdateid.txt"] contents];} on-error={:set lastUpdateId "-1"}
+    :set lastUpdateId "-1"
+    :return $lastUpdateId
+  };
+}
+:global setLastUpdateId
+:if (!any $setLastUpdateId) do={
+  :global setLastUpdateId do={
+    :global lastUpdateId;
+    :set lastUpdateId $1
+    #execute {
+    #  :global lastUpdateId;
+    #  :do {
+    #    /file set [find name="tmp/tlastupdateid.txt"] contents=$lastUpdateId;
+    #    } on-error={
+    #      /file print file="tmp/tlastupdateid.txt";
+    #      :delay 1s;
+    #      /file set [find name="tmp/tlastupdateid.txt"] contents=$lastUpdateId;
+    #    }
+    #  }
+    };
+  }
+  :global processCommand
+  :if (!any $processCommand) do={
+    :global processCommand do={
+      :global replaceChar;
+      :global sendMessage;
+      :global QuotedPrintable;
+      :global escapeString;
+      :local commandPrefix "telegram_bot_"
+      :local command $1
+      :local args "none"
+      if ($1 ~ " ") do={
+        :set command [:pick $1 0 [:find $1 " "]]
+        :set args [:pick $1 ([:find $1 " "]+1) [:len $1]]
+      };
+      :set command [$replaceChar $command " " ""]
+      :set args [$replaceChar $args " " ","]
+      :local scriptName ($commandPrefix.$command)
+      :local result "";
+      :if ([:len [/system script find name=$scriptName]] > 0) do={
+      #:put "find: $scriptName"
+      :local commandScript [:parse [/system script get $scriptName source]]
+      :set result [$commandScript args=($args)]
+
+      } else={
+        if ($command = "list" || $command = "l") do={
+          :foreach scriptObj in=[/system script find where name ~ $commandPrefix] do={
+            :local fullName [/system script get "$scriptObj" name]
+            :local sourceStr [/system script get "$scriptObj" source]
+            :local commandName [:pick $fullName ([:find $fullName $commandPrefix]+[:len $commandPrefix]) [:len $fullName]]
+            :local describePrefix "#describe:"
+            :local commandDescribe [:pick $sourceStr ([:find $sourceStr $describePrefix]+[:len $describePrefix]) [:find $sourceStr "##"]]
+            :set result ($result."--------------------------"."\n");
+            :set result ($result."الامر: ".$commandName."\n")
+            if (!($commandDescribe ~ "^[ �-� ]+\$")) do={
+              :log warning "$commandDescribe"
+              :set result ($result."الوصف: ".$commandDescribe."\n")
+            } else {
+              :set result ($result."الوصف: "."لم يتم كتابة وصف لهذا الامر او ان ترميز النص غير مقبول من المايكروتيك"."\n")
+            }
+          #:log warning $result
+          #:put ([$JSONLoads ("{\"des\":\"$commandDescribe\"}")]->"des")
+
+        }
+        } else={
+          :set result ("الامر: ".$command." غير موجود, يمكنك معرفة الاوامر المتاحة عبر ارسال الامر: "."list"." او: "."l")
+        };
+      }
+
+      $sendMessage $result
+    };
+  }
+  :global handleResponse
+  :if (!any $handleResponse) do={
+    :global handleResponse do={
+      :global setLastUpdateId
+      :global myChat;
+      :global asyncFetch;
+      :global processCommand;
+      :global JSONLoads;
+      :local resultData ([$JSONLoads ($1->"data")]->"result"->0);
+      :local chatId ($resultData->"channel_post"->"chat"->"id");
+      :if ($chatId != $myChat) do={
+        :local data "{\"chat_id\":\"$chatId\"}";
+        [$asyncFetch uri=("/leaveChat") data=($data)]
+        :local updateId ($resultData->"update_id");
+
+        $setLastUpdateId ([:tonum $updateId] + 1)
+        :return null;
+      };
+      :local command ($resultData->"channel_post"->"text");
+      $processCommand $command
+
+    #set new chatid
+    :local updateId ($resultData->"update_id");
+    $setLastUpdateId ([:tonum $updateId] + 1)
+  };
+}
+:local delayNextFetch do={
+  if ($nextFetchCounter >= 180) do={
+    :delay 60s;
+    :return null;
+  }
+  if ($nextFetchCounter >= 90) do={
+    :delay 35s;
+    :return null;
+  }
+  if ($nextFetchCounter >= 30) do={
+    :delay 15s;
+    :return null;
+  }
+};
+:while (true) do={
+  :do {
+    :local offset [$getLastUpdateId]
+    :local url ($urlStart.$botToken."/getUpdates")
+    :local data "{\"limit\":\"1\",\"offset\":\"$offset\",\"timeout\":\"60\"}";
+    :local result [/tool fetch url=$url as-value output=user mode=https http-header-field="content-type: application/json" http-method=post http-data=$data];
+    :if ($result->"status" = "finished" && $result->"data" != "{\"ok\":true,\"result\":[]}") do={
+      :set nextFetchCounter 0
+      $handleResponse $result
+    }
+    } on-error={
+      :set nextFetchCounter ($nextFetchCounter+1)
+      :local wait [$delayNextFetch nextFetchCounter=($nextFetchCounter)]
+      :set wait
+    };
+  };
+}
